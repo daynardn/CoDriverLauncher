@@ -51,19 +51,11 @@ entry.promptExpanded:focus-within {
     border-radius: 12px 12px 0px 0px;
 }
 
-scrolledwindow.sresponse{
-    font-size: 0px;
-    border-radius: 0px 0px 12px 12px;
-    min-height: 0px;
-    background-color: #2f2f2f;
-    color: #ffffff;
-    transition: min-height 0.6s cubic-bezier(0.68, -0.6, .02, 1.6), font-size 400ms ease-in-out, padding 400ms ease-in-out;
-}
 .response{
     font-size: 0px;
     border-radius: 0px 0px 12px 12px;
     min-height: 0px;
-    transition: min-height 0.6s cubic-bezier(0.68, -0.6, .02, 1.6), font-size 400ms ease-in-out, padding 400ms ease-in-out;
+    transition: min-height 0.6s cubic-bezier(0.68, -0.6, .2, 1.6);
     // transform: scaleY(0); 
     // transform-origin: top; 
 
@@ -132,9 +124,7 @@ fn build_ui(app: &gtk::Application) {
 
     let widget_box = gtk::Box::new(gtk4::Orientation::Vertical, 0);
 
-    let entry = gtk::Entry::builder()
-        .placeholder_text("Enter Prompt")
-        .build();
+    let entry = gtk::Entry::builder().placeholder_text("").build();
 
     widget_box.append(&entry);
 
@@ -154,9 +144,14 @@ fn build_ui(app: &gtk::Application) {
         // .vscrollbar_policy(gtk::PolicyType::Automatic)
         .child(&response)
         .build();
-    scrolled_response.add_css_class("sresponse");
+    let response_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(250)
+        .reveal_child(false)
+        .child(&scrolled_response)
+        .build();
 
-    widget_box.append(&scrolled_response);
+    widget_box.append(&response_revealer);
     entry.connect_activate(glib::clone!(
         #[weak]
         response,
@@ -176,6 +171,7 @@ fn build_ui(app: &gtk::Application) {
 
             response.add_css_class("responseExpander");
             entry.add_css_class("promptExpanded");
+            response_revealer.set_reveal_child(true);
 
             let request = GenerationRequest::new(model, prompt).context(ctx);
 
