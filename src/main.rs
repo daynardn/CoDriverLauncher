@@ -5,7 +5,7 @@ use std::{
 
 use futures::{FutureExt, StreamExt};
 use gtk::prelude::*;
-use gtk4::{self as gtk, glib};
+use gtk4::{self as gtk, ScrolledWindow, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use ollama_rs::{
     Ollama,
@@ -29,7 +29,7 @@ window.copilot entry {
 
     padding: 12px 16px;
     font-size: 18px;
-    border-radius: 12px 12px 0px 0px;
+    border-radius: 12px 12px 12px 12px;
     background: #000000;
     color: #eceff4;
     border: 0px solid #5e81ac;
@@ -46,19 +46,46 @@ window.copilot text selection {
     color: #ffffff;
 }
 
+entry.promptExpanded,
+entry.promptExpanded:focus-within {
+    border-radius: 12px 12px 0px 0px;
+}
+
+scrolledwindow.sresponse{
+    font-size: 0px;
+    border-radius: 0px 0px 12px 12px;
+    min-height: 0px;
+    background-color: #2f2f2f;
+    color: #ffffff;
+    transition: min-height 0.6s cubic-bezier(0.68, -0.6, .02, 1.6), font-size 400ms ease-in-out, padding 400ms ease-in-out;
+}
 .response{
     font-size: 0px;
     border-radius: 0px 0px 12px 12px;
+    min-height: 0px;
+    transition: min-height 0.6s cubic-bezier(0.68, -0.6, .02, 1.6), font-size 400ms ease-in-out, padding 400ms ease-in-out;
+    // transform: scaleY(0); 
+    // transform-origin: top; 
+
+
+}
+.responseExpander {
+    // transform: scaleY(1); 
+
+    min-height: 50px;
+    font-size: 18px;
+    padding: 12px 16px;
+    background: #000000;
+    border: 0px solid #5e81ac;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.0);
 }
 
 .responseExpanded {
-    padding: 12px 16px;
+    min-height: 100px;
     background: #000000;
     padding: 12px 16px;
     font-size: 18px;
-    border-radius: 0px 0px 12px 12px;
-    
-}
+    }
 ";
 
 #[tokio::main]
@@ -117,7 +144,19 @@ fn build_ui(app: &gtk::Application) {
     response.set_wrap_mode(gtk4::WrapMode::Word);
     response.add_css_class("response");
 
-    widget_box.append(&response);
+    let scrolled_response = ScrolledWindow::builder()
+        .propagate_natural_height(true)
+        .propagate_natural_width(true)
+        .max_content_height(400)
+        .max_content_width(600)
+        .min_content_height(0)
+        // .hscrollbar_policy(gtk::PolicyType::Automatic)
+        // .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&response)
+        .build();
+    scrolled_response.add_css_class("sresponse");
+
+    widget_box.append(&scrolled_response);
     entry.connect_activate(glib::clone!(
         #[weak]
         response,
@@ -127,7 +166,7 @@ fn build_ui(app: &gtk::Application) {
             entry.set_placeholder_text(Some(&prompt));
 
             let buffer = response.buffer();
-            buffer.set_text(""); // clear previous output
+            buffer.set_text("Thinking..."); // clear previous output
             let buffer = response.buffer();
             let ollama = Ollama::default();
             let model = "nemotron-3.5-bolt:e4b".to_string();
@@ -135,16 +174,22 @@ fn build_ui(app: &gtk::Application) {
             let x = GenerationContext(vec![]);
             let ctx = std::mem::replace(&mut *(chat_context.borrow_mut()), x);
 
-            response.add_css_class("responseExpanded");
+            response.add_css_class("responseExpander");
+            entry.add_css_class("promptExpanded");
 
             let request = GenerationRequest::new(model, prompt).context(ctx);
 
             glib::spawn_future_local(async move {
                 match ollama.generate_stream(request.clone()).await {
                     Ok(mut stream) => {
+                        let mut has_generated = false;
                         while let Some(chunk) = stream.next().await {
                             let responses = chunk.unwrap();
                             for resp in responses {
+                                if !has_generated && resp.response.as_str() != "" {
+                                    buffer.set_text("");
+                                    has_generated = true;
+                                }
                                 buffer.insert(&mut buffer.end_iter(), resp.response.as_str());
                             }
                         }
