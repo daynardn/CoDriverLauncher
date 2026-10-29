@@ -1,9 +1,6 @@
-use std::{
-    cell::RefCell, net::TcpStream, os::unix::process::CommandExt, process::Command, rc::Rc,
-    time::Duration,
-};
+use std::{cell::RefCell, net::TcpStream, process::Command, rc::Rc, sync::Arc, sync::Mutex};
 
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use gtk::prelude::*;
 use gtk4::{self as gtk, ScrolledWindow, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -19,6 +16,7 @@ window.copilot {
     min-width: 0px;
     
     transition: min-width 0.6s cubic-bezier(0.68, -0.6, 0.32, 1.6);
+    border-radius: 12px 12px 12px 12px;
 }
 
 window.expanded {
@@ -29,7 +27,6 @@ window.copilot entry {
 
     padding: 12px 16px;
     font-size: 18px;
-    border-radius: 12px 12px 12px 12px;
     background: #000000;
     color: #eceff4;
     border: 0px solid #5e81ac;
@@ -101,7 +98,7 @@ async fn main() -> gtk::glib::ExitCode {
 }
 
 fn build_ui(app: &gtk::Application) {
-    let chat_context = Rc::new(RefCell::new(GenerationContext(vec![])));
+    let chat_context = Arc::new(Mutex::new(GenerationContext(vec![])));
 
     // Load CSS for the whole display
     let provider = gtk::CssProvider::new();
@@ -133,6 +130,7 @@ fn build_ui(app: &gtk::Application) {
     response.set_vexpand(true);
     response.set_wrap_mode(gtk4::WrapMode::Word);
     response.add_css_class("response");
+    response.set_cursor_visible(false);
 
     let scrolled_response = ScrolledWindow::builder()
         .propagate_natural_height(true)
@@ -166,14 +164,14 @@ fn build_ui(app: &gtk::Application) {
             let ollama = Ollama::default();
             let model = "nemotron-3.5-bolt:e4b".to_string();
 
-            let x = GenerationContext(vec![]);
-            let ctx = std::mem::replace(&mut *(chat_context.borrow_mut()), x);
-
             response.add_css_class("responseExpander");
             entry.add_css_class("promptExpanded");
             response_revealer.set_reveal_child(true);
 
-            let request = GenerationRequest::new(model, prompt).context(ctx);
+            let context_clone = Arc::clone(&chat_context);
+
+            let x = chat_context.lock().unwrap();
+            let request = GenerationRequest::new(model, prompt).context((*x).clone());
 
             glib::spawn_future_local(async move {
                 match ollama.generate_stream(request.clone()).await {
@@ -187,6 +185,11 @@ fn build_ui(app: &gtk::Application) {
                                     has_generated = true;
                                 }
                                 buffer.insert(&mut buffer.end_iter(), resp.response.as_str());
+
+                                // update model context
+                                if let Some(ctx) = resp.context {
+                                    *context_clone.lock().unwrap() = ctx;
+                                }
                             }
                         }
 
@@ -198,8 +201,6 @@ fn build_ui(app: &gtk::Application) {
                     }
                 }
             });
-
-            // *chat_context.borrow_mut() = new_context;
         }
     ));
 
