@@ -1,18 +1,32 @@
-use std::{os::unix::process::CommandExt, process::Command, time::Duration};
+use std::{
+    cell::RefCell, net::TcpStream, os::unix::process::CommandExt, process::Command, rc::Rc,
+    time::Duration,
+};
 
 use futures::{FutureExt, StreamExt};
 use gtk::prelude::*;
 use gtk4::{self as gtk, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use ollama_rs::{Ollama, generation::completion::request::GenerationRequest};
+use ollama_rs::{
+    Ollama,
+    generation::completion::{GenerationContext, request::GenerationRequest},
+};
 
 const CSS: &str = "
 
 window.copilot {
     background: transparent;
+    min-width: 0px;
+    
+    transition: min-width 0.6s cubic-bezier(0.68, -0.6, 0.32, 1.6);
 }
-window.copilot entry {
+
+window.expanded {
     min-width: 500px;
+}
+
+window.copilot entry {
+
     padding: 12px 16px;
     font-size: 18px;
     border-radius: 12px 12px 0px 0px;
@@ -33,35 +47,43 @@ window.copilot text selection {
 }
 
 .response{
+    font-size: 0px;
+    border-radius: 0px 0px 12px 12px;
+}
+
+.responseExpanded {
     padding: 12px 16px;
     background: #000000;
     padding: 12px 16px;
     font-size: 18px;
     border-radius: 0px 0px 12px 12px;
+    
 }
 ";
 
 #[tokio::main]
 async fn main() -> gtk::glib::ExitCode {
-    let mut command = {
-        let mut cmd = Command::new("ollama");
-        cmd.arg("serve");
-        cmd
-    };
+    if !TcpStream::connect(format!("{}:{}", "localhost", 11434)).is_ok() {
+        let mut command = {
+            let mut cmd = Command::new("ollama");
+            cmd.arg("serve");
+            cmd
+        };
 
-    let mut command = command.spawn().expect("failed to execute");
-
+        let _ = command.spawn().expect("failed to execute");
+    }
     let app = gtk::Application::builder()
         .application_id("me.ai.copilot")
         .build();
     app.connect_activate(build_ui);
     let res = app.run();
 
-    let _ = command.kill();
     res
 }
 
 fn build_ui(app: &gtk::Application) {
+    let chat_context = Rc::new(RefCell::new(GenerationContext(vec![])));
+
     // Load CSS for the whole display
     let provider = gtk::CssProvider::new();
     provider.load_from_data(CSS);
@@ -73,7 +95,7 @@ fn build_ui(app: &gtk::Application) {
 
     let win = gtk::ApplicationWindow::new(app);
     win.add_css_class("copilot");
-    win.set_default_size(500, -1);
+    win.set_default_size(0, -1);
 
     win.init_layer_shell();
     win.set_layer(Layer::Overlay);
@@ -109,10 +131,16 @@ fn build_ui(app: &gtk::Application) {
             let buffer = response.buffer();
             let ollama = Ollama::default();
             let model = "nemotron-3.5-bolt:e4b".to_string();
-            let request = GenerationRequest::new(model, prompt);
+
+            let x = GenerationContext(vec![]);
+            let ctx = std::mem::replace(&mut *(chat_context.borrow_mut()), x);
+
+            response.add_css_class("responseExpanded");
+
+            let request = GenerationRequest::new(model, prompt).context(ctx);
 
             glib::spawn_future_local(async move {
-                match ollama.generate_stream(request).await {
+                match ollama.generate_stream(request.clone()).await {
                     Ok(mut stream) => {
                         while let Some(chunk) = stream.next().await {
                             let responses = chunk.unwrap();
@@ -120,27 +148,35 @@ fn build_ui(app: &gtk::Application) {
                                 buffer.insert(&mut buffer.end_iter(), resp.response.as_str());
                             }
                         }
+
+                        request.context.expect("")
                     }
-                    Err(e) => buffer.set_text(&format!("[error: {e}]")),
+                    Err(e) => {
+                        buffer.set_text(&format!("[error: {e}]"));
+                        GenerationContext(vec![])
+                    }
                 }
             });
+
+            // *chat_context.borrow_mut() = new_context;
         }
     ));
 
-    // entry.connect_activate(move |entry| {
-    //     println!("TEst");
-    //     println!("{}", entry.text());
-    //     let buffer = response.buffer();
-    //     let ollama = Ollama::default();
-    //     let model = "phi4".to_string();
-    //     let prompt = "Explain Rust ownership in one sentence.".to_string();
-
-    //     let request = GenerationRequest::new(model, prompt);
-    //     let res = ollama.generate(request).await?;
-    //     buffer.set_text("hi am ai I will help (trust me) here code \n code here \n ok");
-    // });
-
     win.set_child(Some(&widget_box));
+
+    glib::timeout_add_local(
+        std::time::Duration::from_millis(0),
+        glib::clone!(
+            #[weak]
+            win,
+            #[upgrade_or]
+            glib::ControlFlow::Break,
+            move || {
+                win.add_css_class("expanded");
+                glib::ControlFlow::Break
+            }
+        ),
+    );
 
     // Escape closes
     let keys = gtk::EventControllerKey::new();
