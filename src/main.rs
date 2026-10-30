@@ -6,7 +6,10 @@ use gtk4::{self as gtk, ScrolledWindow, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use ollama_rs::{
     Ollama,
-    generation::completion::{GenerationContext, request::GenerationRequest},
+    generation::{
+        chat::{ChatMessage, request::ChatMessageRequest},
+        completion::{GenerationContext, request::GenerationRequest},
+    },
 };
 
 const CSS: &str = "
@@ -104,7 +107,7 @@ async fn main() -> gtk::glib::ExitCode {
 }
 
 fn build_ui(app: &gtk::Application) {
-    let chat_context = Arc::new(Mutex::new(GenerationContext(vec![])));
+    let chat_context = Arc::new(Mutex::new(vec![ChatMessage::assistant("Hi".to_owned())]));
 
     // Load CSS for the whole display
     let provider = gtk::CssProvider::new();
@@ -176,34 +179,56 @@ fn build_ui(app: &gtk::Application) {
 
             let context_clone = Arc::clone(&chat_context);
 
-            let x = chat_context.lock().unwrap();
-            let request = GenerationRequest::new(model, prompt).context((*x).clone());
+            /// Get the current weather for a specific location.
+            ///
+            /// # Arguments
+            /// * `location` - The city and state, e.g. San Francisco, CA
+            #[ollama_rs::function]
+            async fn get_weather(
+                location: String,
+            ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+                // In a production app, you would fetch from a real weather API here.
+                // For now, return a mock string.
+                Ok(format!(
+                    "The weather in {} is currently sunny and 22°C.",
+                    location
+                ))
+            }
+
+            let request = ChatMessageRequest::new(model, vec![ChatMessage::user(prompt)])
+                .add_tool(get_weather);
 
             glib::spawn_future_local(async move {
-                match ollama.generate_stream(request.clone()).await {
+                match ollama
+                    .send_chat_messages_with_history_stream(context_clone, request)
+                    .await
+                {
                     Ok(mut stream) => {
                         let mut has_generated = false;
                         while let Some(chunk) = stream.next().await {
-                            let responses = chunk.unwrap();
-                            for resp in responses {
-                                if !has_generated && resp.response.as_str() != "" {
+                            let content = chunk.unwrap();
+
+                            if !content.message.tool_calls.is_empty() {
+                                let tool_calls = content.message.tool_calls;
+                                for tool in tool_calls {
+                                    println!(
+                                        "Tool called: {} with args: {:?}",
+                                        tool.function.name, tool.function.arguments
+                                    );
+                                }
+                            } else {
+                                if !has_generated && content.message.content != "" {
                                     buffer.set_text("");
                                     has_generated = true;
                                 }
-                                buffer.insert(&mut buffer.end_iter(), resp.response.as_str());
 
-                                // update model context
-                                if let Some(ctx) = resp.context {
-                                    *context_clone.lock().unwrap() = ctx;
-                                }
+                                buffer.insert(&mut buffer.end_iter(), &content.message.content);
                             }
                         }
-
-                        request.context.expect("")
                     }
                     Err(e) => {
                         buffer.set_text(&format!("[error: {e}]"));
-                        GenerationContext(vec![])
+                        // GenerationContext(vec![])
                     }
                 }
             });
