@@ -130,6 +130,8 @@ dependencies = [
  "gtk4-layer-shell",
  "mouse_position",
  "ollama-rs",
+ "schemars",
+ "serde_json",
  "tokio",
 ]
 

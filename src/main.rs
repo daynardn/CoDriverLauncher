@@ -7,7 +7,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use ollama_rs::{
     Ollama,
     generation::{
-        chat::{ChatMessage, request::ChatMessageRequest},
+        chat::{ChatMessage, MessageRole, request::ChatMessageRequest},
         completion::{GenerationContext, request::GenerationRequest},
     },
 };
@@ -86,6 +86,20 @@ entry.promptExpanded:focus-within {
     }
 ";
 
+/// Get the current weather for a specific location.
+///
+/// # Arguments
+/// * `location` - The city and state, e.g. San Francisco, CA
+#[ollama_rs::function]
+async fn get_weather(location: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    // In a production app, you would fetch from a real weather API here.
+    // For now, return a mock string.
+    Ok(format!(
+        "The weather in {} is currently sunny and 22°C.",
+        location
+    ))
+}
+
 #[tokio::main]
 async fn main() -> gtk::glib::ExitCode {
     if !TcpStream::connect(format!("{}:{}", "localhost", 11434)).is_ok() {
@@ -107,7 +121,7 @@ async fn main() -> gtk::glib::ExitCode {
 }
 
 fn build_ui(app: &gtk::Application) {
-    let chat_context = Arc::new(Mutex::new(vec![ChatMessage::assistant("Hi".to_owned())]));
+    let chat_context = Arc::new(Mutex::new(vec![ChatMessage::assistant("".to_owned())]));
 
     // Load CSS for the whole display
     let provider = gtk::CssProvider::new();
@@ -179,28 +193,12 @@ fn build_ui(app: &gtk::Application) {
 
             let context_clone = Arc::clone(&chat_context);
 
-            /// Get the current weather for a specific location.
-            ///
-            /// # Arguments
-            /// * `location` - The city and state, e.g. San Francisco, CA
-            #[ollama_rs::function]
-            async fn get_weather(
-                location: String,
-            ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-                // In a production app, you would fetch from a real weather API here.
-                // For now, return a mock string.
-                Ok(format!(
-                    "The weather in {} is currently sunny and 22°C.",
-                    location
-                ))
-            }
-
-            let request = ChatMessageRequest::new(model, vec![ChatMessage::user(prompt)])
+            let request = ChatMessageRequest::new(model.clone(), vec![ChatMessage::user(prompt)])
                 .add_tool(get_weather);
 
             glib::spawn_future_local(async move {
                 match ollama
-                    .send_chat_messages_with_history_stream(context_clone, request)
+                    .send_chat_messages_with_history_stream(Arc::clone(&context_clone), request)
                     .await
                 {
                     Ok(mut stream) => {
@@ -209,26 +207,62 @@ fn build_ui(app: &gtk::Application) {
                             let content = chunk.unwrap();
 
                             if !content.message.tool_calls.is_empty() {
-                                let tool_calls = content.message.tool_calls;
-                                for tool in tool_calls {
-                                    println!(
-                                        "Tool called: {} with args: {:?}",
-                                        tool.function.name, tool.function.arguments
-                                    );
+                                for tool in content.message.tool_calls.clone() {
+                                    buffer
+                                        .set_text(&("Executing ".to_owned() + &tool.function.name));
+
+                                    if tool.function.name == "get_weather" {
+                                        let args = tool.function.arguments;
+                                        let location = args["location"]
+                                            .as_str()
+                                            .unwrap_or("Tokyo")
+                                            .to_string();
+
+                                        let result = "Partly Cloudy and 95*F";
+                                        let tool_message = ChatMessage::new(
+                                            ollama_rs::generation::chat::MessageRole::Tool,
+                                            result.to_owned(),
+                                        );
+
+                                        {
+                                            let mut history = context_clone.lock().unwrap();
+                                            history.push(content.message.clone());
+                                            history.push(tool_message);
+                                        }
+                                    }
+                                    if let Ok(mut final_stream) = ollama
+                                        .send_chat_messages_with_history_stream(
+                                            Arc::clone(&context_clone),
+                                            ChatMessageRequest::new(model.clone(), vec![]),
+                                        )
+                                        .await
+                                    {
+                                        buffer.set_text("");
+                                        while let Some(chunk) = final_stream.next().await {
+                                            if let Ok(content) = chunk {
+                                                if content.final_data.is_none() {
+                                                    buffer.insert(
+                                                        &mut buffer.end_iter(),
+                                                        &content.message.content,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 if !has_generated && content.message.content != "" {
                                     buffer.set_text("");
                                     has_generated = true;
                                 }
-
-                                buffer.insert(&mut buffer.end_iter(), &content.message.content);
+                                if !content.final_data.is_some() {
+                                    buffer.insert(&mut buffer.end_iter(), &content.message.content);
+                                }
                             }
                         }
                     }
                     Err(e) => {
                         buffer.set_text(&format!("[error: {e}]"));
-                        // GenerationContext(vec![])
                     }
                 }
             });
