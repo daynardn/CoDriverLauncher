@@ -14,16 +14,22 @@ const CSS: &str = "
 window.copilot {
     background: transparent;
     min-width: 0px;
+    margin-top: 0px;
     
-    transition: min-width 0.6s cubic-bezier(0.68, -0.6, 0.32, 1.6);
+    
+    transition: min-width 0.6s cubic-bezier(0.68, -0.6, 0.32, 1.6), margin-top 0.5s cubic-bezier(.42,1.69,.68,.86);
     border-radius: 12px 12px 12px 12px;
 }
 
 window.expanded {
     min-width: 500px;
+    margin-top: 250px;
+}
+window.expanded entry {
 }
 
 window.copilot entry {
+    // transform: translateY(40px); 
 
     padding: 12px 16px;
     font-size: 18px;
@@ -117,7 +123,7 @@ fn build_ui(app: &gtk::Application) {
     win.set_layer(Layer::Overlay);
     win.set_keyboard_mode(KeyboardMode::Exclusive);
     win.set_anchor(Edge::Top, true);
-    win.set_margin(Edge::Top, 250);
+    win.set_margin(Edge::Top, 0);
 
     let widget_box = gtk::Box::new(gtk4::Orientation::Vertical, 0);
 
