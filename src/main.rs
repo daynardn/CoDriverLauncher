@@ -12,6 +12,7 @@ use ollama_rs::{
     },
     re_exports::serde::Deserialize,
 };
+use serde_json::{json, Value};
 
 const CSS: &str = "
 
@@ -205,6 +206,48 @@ fn build_ui(app: &gtk::Application) {
             let ollama = Ollama::default();
 
             // Let's check if the request is a basic one or NEEDS an llm TODO!
+            
+            let url = format!("{}/v1/systemone", ollama.url_str().trim_end_matches('/'));
+
+            let body = json!({
+                "model": "tev1:0.8b",
+                "state": prompt,
+                "questions": {
+                    "action": {
+                        "type": "choice",
+                        "instructions": "Which action does this request need?",
+                        "criteria": {
+                            "brightnessup":   "The user wants the screen brighter",
+                            "brightnessdown": "The user wants the screen dimmer",
+                            "volumeup":   "The user wants the volume higher",
+                            "volumedown":   "The user wants the volume lower",
+                            "close":   "The user wants to close this window",
+                            "llmfast":  "A simple question answerable from basic knowledge, such as facts, definitions or short lookups",
+                            "llmsmart": "A question that needs math, calculation, multi-step reasoning, code or analysis"
+                        }
+                    }
+                }
+            });
+            let client = reqwest::Client::new();
+            glib::spawn_future_local(async move {
+                for i in 1..5 {
+
+                let resp: Value = 
+                    client.post(url.clone())
+                    .json(&body)
+                    .send()
+                    .await.expect("")
+                    .error_for_status().expect("")
+                    .json()
+                    .await.expect("");
+
+                let a = &resp["answers"]["action"];
+                let choice = a["choice"].as_str().unwrap_or_default().to_string();
+                let confidence = a["confidence"].as_f64().unwrap_or(0.0);
+                println!("{}", choice);
+                }
+            });
+
 
 
             
