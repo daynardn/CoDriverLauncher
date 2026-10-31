@@ -1,15 +1,23 @@
 use futures::StreamExt;
-use gtk4::{TextBuffer, prelude::TextBufferExt};
-use ollama_rs::{Ollama, generation::chat::{ChatMessage, request::ChatMessageRequest}};
+use gtk4::{ScrolledWindow, TextBuffer, prelude::TextBufferExt};
+use ollama_rs::{
+    Ollama,
+    generation::chat::{ChatMessage, request::ChatMessageRequest},
+};
 use serde::Deserialize;
 use std::{sync::Arc, sync::Mutex};
 
-
-pub async fn render(ollama: Ollama, buffer: TextBuffer, context_clone: Arc<Mutex<Vec<ChatMessage>>>, model: String, request: ChatMessageRequest) {
+pub async fn render(
+    ollama: Ollama,
+    buffer: TextBuffer,
+    context_clone: Arc<Mutex<Vec<ChatMessage>>>,
+    model: String,
+    request: ChatMessageRequest,
+) {
     match ollama
         .send_chat_messages_with_history_stream(Arc::clone(&context_clone), request)
         .await
-        {
+    {
         Ok(mut stream) => {
             let mut has_generated = false;
             while let Some(chunk) = stream.next().await {
@@ -17,15 +25,11 @@ pub async fn render(ollama: Ollama, buffer: TextBuffer, context_clone: Arc<Mutex
 
                 if !content.message.tool_calls.is_empty() {
                     for tool in content.message.tool_calls.clone() {
-                        buffer
-                            .set_text(&("Executing ".to_owned() + &tool.function.name));
+                        buffer.set_text(&("Executing ".to_owned() + &tool.function.name));
 
                         if tool.function.name == "get_weather" {
                             let args = tool.function.arguments;
-                            let location = args["location"]
-                                .as_str()
-                                .unwrap_or("Tokyo")
-                                .to_string();
+                            let location = args["location"].as_str().unwrap_or("Tokyo").to_string();
 
                             let api_key = "df8e10a50aae988bb75fca883e066bc5";
                             #[derive(Deserialize, Debug)]
@@ -75,9 +79,14 @@ pub async fn render(ollama: Ollama, buffer: TextBuffer, context_clone: Arc<Mutex
                                         res.main.temp.to_string()
                                             + "°F and "
                                             + &res.main.humidity.to_string()
-                                            + "% humidity " + " with " + &res.weather.iter()
-                                            .map(|x| x.description.clone()).collect::<String>().to_owned(),
-
+                                            + "% humidity "
+                                            + " with "
+                                            + &res
+                                                .weather
+                                                .iter()
+                                                .map(|x| x.description.clone())
+                                                .collect::<String>()
+                                                .to_owned(),
                                     )
                                 }
 
@@ -114,10 +123,7 @@ pub async fn render(ollama: Ollama, buffer: TextBuffer, context_clone: Arc<Mutex
                                     has_generated = true;
                                 }
                                 if content.final_data.is_none() {
-                                    buffer.insert(
-                                        &mut buffer.end_iter(),
-                                        &content.message.content,
-                                    );
+                                    buffer.insert(&mut buffer.end_iter(), &content.message.content);
                                 }
                             }
                         }

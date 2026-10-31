@@ -26,10 +26,12 @@ window.expanded {
     min-width: 500px;
     margin-top: 250px;
 }
+
 window.locked {
     transition: min-width 0.0s cubic-bezier(0.68, -0.6, 0.32, 1.6), margin-top 0.0s cubic-bezier(.42,1.69,.68,.86);
     min-width: 500px;
 }
+
 window.expanded entry {
 }
 
@@ -66,9 +68,8 @@ entry.promptExpanded:focus-within {
     transition: min-height 0.6s cubic-bezier(0.68, -0.6, .2, 1.6);
     // transform: scaleY(0); 
     // transform-origin: top; 
-
-
 }
+
 .responseExpander {
     // transform: scaleY(1); 
 
@@ -91,7 +92,7 @@ entry.promptExpanded:focus-within {
 /// Get the current weather for a specific location.
 ///
 /// # Arguments
-/// * `location` - The city and state, e.g. San Francisco, CA
+/// * `location` - The city e.g. San Francisco,CA,US or London
 #[ollama_rs::function]
 async fn get_weather(location: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     _ = location;
@@ -171,6 +172,8 @@ fn build_ui(app: &gtk::Application) {
         .child(&scrolled_response)
         .build();
 
+    let response_revealer_clone = response_revealer.clone();
+
     let current: Rc<RefCell<Option<glib::JoinHandle<()>>>> = Rc::new(RefCell::new(None));
 
     widget_box.append(&response_revealer);
@@ -246,7 +249,7 @@ fn build_ui(app: &gtk::Application) {
 
             response.add_css_class("responseExpander");
             entry.add_css_class("promptExpanded");
-            response_revealer.set_reveal_child(true);
+            response_revealer_clone.set_reveal_child(true);
 
             let context_clone = Arc::clone(&chat_context);
 
@@ -299,7 +302,26 @@ fn build_ui(app: &gtk::Application) {
     let w = win.clone();
     keys.connect_key_pressed(move |_, key, _, _| {
         if key == gtk::gdk::Key::Escape {
-            w.close();
+            w.remove_css_class("locked");
+            response_revealer.set_reveal_child(false);
+            // w.set_margin(Edge::Top, 0);
+
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(400),
+                glib::clone!(
+                    #[weak]
+                    w,
+                    #[upgrade_or]
+                    glib::ControlFlow::Break,
+                    move || {
+                        w.close();
+                    
+
+                        glib::ControlFlow::Break
+                    }
+                ),
+            );
+
             return gtk::glib::Propagation::Stop;
         }
         gtk::glib::Propagation::Proceed
