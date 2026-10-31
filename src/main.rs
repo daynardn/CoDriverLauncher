@@ -1,18 +1,14 @@
 use std::{cell::RefCell, net::TcpStream, process::Command, rc::Rc, sync::Arc, sync::Mutex};
 
-use futures::StreamExt;
 use gtk::prelude::*;
 use gtk4::{self as gtk, ScrolledWindow, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use ollama_rs::{
     Ollama,
-    generation::{
-        chat::{ChatMessage, MessageRole, request::ChatMessageRequest},
-        completion::{GenerationContext, request::GenerationRequest},
-    },
-    re_exports::serde::Deserialize,
+    generation::chat::{ChatMessage, request::ChatMessageRequest},
 };
 use serde_json::{json, Value};
+mod ollama_runner;
 
 const CSS: &str = "
 
@@ -98,12 +94,8 @@ entry.promptExpanded:focus-within {
 /// * `location` - The city and state, e.g. San Francisco, CA
 #[ollama_rs::function]
 async fn get_weather(location: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    // In a production app, you would fetch from a real weather API here.
-    // For now, return a mock string.
-    Ok(format!(
-        "The weather in {} is currently sunny and 22°C.",
-        location
-    ))
+    _ = location;
+    Ok("".to_owned())
 }
 
 #[tokio::main]
@@ -127,7 +119,7 @@ async fn main() -> gtk::glib::ExitCode {
 }
 
 fn build_ui(app: &gtk::Application) {
-    let chat_context = Arc::new(Mutex::new(vec![ChatMessage::system("You are an AI model developed by the user, you are currently running locally in a dev mode".to_owned())]));
+    let chat_context: Arc<Mutex<Vec<ChatMessage>>> = Arc::new(Mutex::new(vec![ChatMessage::system("You are an AI model developed by the user, you are currently running locally in a dev mode".to_owned())]));
 
     // Load CSS for the whole display
     let provider = gtk::CssProvider::new();
@@ -228,9 +220,9 @@ fn build_ui(app: &gtk::Application) {
                     }
                 }
             });
+
             let client = reqwest::Client::new();
             glib::spawn_future_local(async move {
-                for i in 1..5 {
 
                 let resp: Value = 
                     client.post(url.clone())
@@ -243,9 +235,8 @@ fn build_ui(app: &gtk::Application) {
 
                 let a = &resp["answers"]["action"];
                 let choice = a["choice"].as_str().unwrap_or_default().to_string();
-                let confidence = a["confidence"].as_f64().unwrap_or(0.0);
+                let _ = a["confidence"].as_f64().unwrap_or(0.0);
                 println!("{}", choice);
-                }
             });
 
 
@@ -263,137 +254,7 @@ fn build_ui(app: &gtk::Application) {
                 .add_tool(get_weather);
 
             let handle = glib::spawn_future_local(async move {
-                match ollama
-                    .send_chat_messages_with_history_stream(Arc::clone(&context_clone), request)
-                    .await
-                {
-                    Ok(mut stream) => {
-                        let mut has_generated = false;
-                        while let Some(chunk) = stream.next().await {
-                            let content = chunk.unwrap();
-
-                            if !content.message.tool_calls.is_empty() {
-                                for tool in content.message.tool_calls.clone() {
-                                    buffer
-                                        .set_text(&("Executing ".to_owned() + &tool.function.name));
-
-                                    if tool.function.name == "get_weather" {
-                                        let args = tool.function.arguments;
-                                        let location = args["location"]
-                                            .as_str()
-                                            .unwrap_or("Tokyo")
-                                            .to_string();
-
-                                        let api_key = "df8e10a50aae988bb75fca883e066bc5";
-                                        #[derive(Deserialize, Debug)]
-                                        struct Main {
-                                            temp: f32,
-                                            humidity: u32,
-                                        }
-
-                                        #[derive(Deserialize, Debug)]
-                                        struct WeatherCondition {
-                                            description: String,
-                                        }
-
-                                        #[derive(Deserialize, Debug)]
-                                        struct WeatherResponse {
-                                            main: Main,
-                                            weather: Vec<WeatherCondition>,
-                                            name: String,
-                                        }
-
-                                        let tool_message;
-
-                                        async fn fetch_weather(
-                                            client: &reqwest::Client,
-                                            location: &str,
-                                            api_key: &str,
-                                        ) -> Result<WeatherResponse, reqwest::Error>
-                                        {
-                                            client
-                                                .get("https://api.openweathermap.org/data/2.5/weather")
-                                                .query(&[
-                                                    ("q", location),
-                                                    ("units", "imperial"),
-                                                    ("appid", api_key),
-                                                ])
-                                                .send()
-                                                .await?
-                                                .error_for_status()? // turns 401, 404, etc. into an Err
-                                                .json::<WeatherResponse>()
-                                                .await
-                                        }
-
-                                        match fetch_weather(&reqwest::Client::new(), &location, api_key).await {
-                                            Ok(res) => {
-                                                tool_message = ChatMessage::new(
-                                                    ollama_rs::generation::chat::MessageRole::Tool,
-                                                    res.main.temp.to_string()
-                                                        + "°F and "
-                                                        + &res.main.humidity.to_string()
-                                                        + "% humidity " + " with " + &res.weather.iter()
-                                                        .map(|x| x.description.clone()).collect::<String>().to_owned(),
-
-                                                )
-                                            }
-
-                                            Err(e) => {
-                                                tool_message = ChatMessage::new(
-                                                    ollama_rs::generation::chat::MessageRole::Tool,
-                                                    "Error fetching: ".to_string().to_owned() + &e.to_string(),
-                                                )
-                                            }
-                                        }
-
-                                        {
-                                            let mut history = context_clone.lock().unwrap();
-                                            history.push(content.message.clone());
-                                            history.push(tool_message);
-                                        }
-                                    }
-
-                                    buffer.set_text("Thinking...");
-                                }
-
-                                if let Ok(mut final_stream) = ollama
-                                    .send_chat_messages_with_history_stream(
-                                        Arc::clone(&context_clone),
-                                        ChatMessageRequest::new(model.clone(), vec![]),
-                                    )
-                                    .await
-                                {
-                                    let mut has_generated = false;
-                                    while let Some(chunk) = final_stream.next().await {
-                                        if let Ok(content) = chunk {
-                                            if !has_generated && content.message.content != "" {
-                                                buffer.set_text("");
-                                                has_generated = true;
-                                            }
-                                            if content.final_data.is_none() {
-                                                buffer.insert(
-                                                    &mut buffer.end_iter(),
-                                                    &content.message.content,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                if !has_generated && content.message.content != "" {
-                                    buffer.set_text("");
-                                    has_generated = true;
-                                }
-                                if !content.final_data.is_some() {
-                                    buffer.insert(&mut buffer.end_iter(), &content.message.content);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        buffer.set_text(&format!("[error: {e}]"));
-                    }
-                }
+                ollama_runner::render(ollama, buffer, context_clone, model.clone(), request).await;
             });
             *current.borrow_mut() = Some(handle);
         }
