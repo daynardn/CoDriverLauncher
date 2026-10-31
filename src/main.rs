@@ -29,6 +29,10 @@ window.expanded {
     min-width: 500px;
     margin-top: 250px;
 }
+window.locked {
+    transition: min-width 0.0s cubic-bezier(0.68, -0.6, 0.32, 1.6), margin-top 0.0s cubic-bezier(.42,1.69,.68,.86);
+    min-width: 500px;
+}
 window.expanded entry {
 }
 
@@ -174,11 +178,23 @@ fn build_ui(app: &gtk::Application) {
         .child(&scrolled_response)
         .build();
 
+    let current: Rc<RefCell<Option<glib::JoinHandle<()>>>> = Rc::new(RefCell::new(None));
+
     widget_box.append(&response_revealer);
     entry.connect_activate(glib::clone!(
         #[weak]
         response,
         move |entry| {
+            if let Some(old) = current.borrow_mut().take() {
+                old.abort(); // cancels at the task's next .await
+                // Save the half-complete response to the history
+                {
+                    let mut history = chat_context.lock().unwrap();
+                    let (start_iter, end_iter) = response.buffer().bounds();
+
+                    history.push(ChatMessage::assistant(response.buffer().text(&start_iter, &end_iter, true).to_string()));
+                }
+            }
             let prompt = entry.text().to_string();
             entry.set_text("");
             entry.set_placeholder_text(Some(&prompt));
@@ -187,6 +203,11 @@ fn build_ui(app: &gtk::Application) {
             buffer.set_text("Thinking..."); // clear previous output
             let buffer = response.buffer();
             let ollama = Ollama::default();
+
+            // Let's check if the request is a basic one or NEEDS an llm TODO!
+
+
+            
             let model = "nemotron-3.5-bolt:e4b".to_string();
 
             response.add_css_class("responseExpander");
@@ -198,7 +219,7 @@ fn build_ui(app: &gtk::Application) {
             let request = ChatMessageRequest::new(model.clone(), vec![ChatMessage::user(prompt)])
                 .add_tool(get_weather);
 
-            glib::spawn_future_local(async move {
+            let handle = glib::spawn_future_local(async move {
                 match ollama
                     .send_chat_messages_with_history_stream(Arc::clone(&context_clone), request)
                     .await
@@ -331,6 +352,7 @@ fn build_ui(app: &gtk::Application) {
                     }
                 }
             });
+            *current.borrow_mut() = Some(handle);
         }
     ));
 
@@ -345,6 +367,24 @@ fn build_ui(app: &gtk::Application) {
             glib::ControlFlow::Break,
             move || {
                 win.add_css_class("expanded");
+
+                glib::ControlFlow::Break
+            }
+        ),
+    );
+
+    glib::timeout_add_local(
+        std::time::Duration::from_millis(640),
+        glib::clone!(
+            #[weak]
+            win,
+            #[upgrade_or]
+            glib::ControlFlow::Break,
+            move || {
+                win.remove_css_class("expanded");
+                win.add_css_class("locked");
+                win.set_margin(Edge::Top, 250);
+
                 glib::ControlFlow::Break
             }
         ),
