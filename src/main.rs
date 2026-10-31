@@ -10,6 +10,7 @@ use ollama_rs::{
         chat::{ChatMessage, MessageRole, request::ChatMessageRequest},
         completion::{GenerationContext, request::GenerationRequest},
     },
+    re_exports::serde::Deserialize,
 };
 
 const CSS: &str = "
@@ -121,7 +122,7 @@ async fn main() -> gtk::glib::ExitCode {
 }
 
 fn build_ui(app: &gtk::Application) {
-    let chat_context = Arc::new(Mutex::new(vec![ChatMessage::assistant("".to_owned())]));
+    let chat_context = Arc::new(Mutex::new(vec![ChatMessage::system("You are an AI model developed by the user, you are currently running locally in a dev mode".to_owned())]));
 
     // Load CSS for the whole display
     let provider = gtk::CssProvider::new();
@@ -135,10 +136,11 @@ fn build_ui(app: &gtk::Application) {
     let win = gtk::ApplicationWindow::new(app);
     win.add_css_class("copilot");
     win.set_default_size(0, -1);
+    win.set_modal(false);
 
     win.init_layer_shell();
     win.set_layer(Layer::Overlay);
-    win.set_keyboard_mode(KeyboardMode::Exclusive);
+    win.set_keyboard_mode(KeyboardMode::OnDemand);
     win.set_anchor(Edge::Top, true);
     win.set_margin(Edge::Top, 0);
 
@@ -218,11 +220,67 @@ fn build_ui(app: &gtk::Application) {
                                             .unwrap_or("Tokyo")
                                             .to_string();
 
-                                        let result = "Partly Cloudy and 95*F";
-                                        let tool_message = ChatMessage::new(
-                                            ollama_rs::generation::chat::MessageRole::Tool,
-                                            result.to_owned(),
-                                        );
+                                        let api_key = "df8e10a50aae988bb75fca883e066bc5";
+                                        #[derive(Deserialize, Debug)]
+                                        struct Main {
+                                            temp: f32,
+                                            humidity: u32,
+                                        }
+
+                                        #[derive(Deserialize, Debug)]
+                                        struct WeatherCondition {
+                                            description: String,
+                                        }
+
+                                        #[derive(Deserialize, Debug)]
+                                        struct WeatherResponse {
+                                            main: Main,
+                                            weather: Vec<WeatherCondition>,
+                                            name: String,
+                                        }
+
+                                        let tool_message;
+
+                                        async fn fetch_weather(
+                                            client: &reqwest::Client,
+                                            location: &str,
+                                            api_key: &str,
+                                        ) -> Result<WeatherResponse, reqwest::Error>
+                                        {
+                                            client
+                                                .get("https://api.openweathermap.org/data/2.5/weather")
+                                                .query(&[
+                                                    ("q", location),
+                                                    ("units", "imperial"),
+                                                    ("appid", api_key),
+                                                ])
+                                                .send()
+                                                .await?
+                                                .error_for_status()? // turns 401, 404, etc. into an Err
+                                                .json::<WeatherResponse>()
+                                                .await
+                                        }
+
+                                        match fetch_weather(&reqwest::Client::new(), &location, api_key).await {
+                                            Ok(res) => {
+                                                tool_message = ChatMessage::new(
+                                                    ollama_rs::generation::chat::MessageRole::Tool,
+                                                    res.main.temp.to_string()
+                                                        + "°F and "
+                                                        + &res.main.humidity.to_string()
+                                                        + "% humidity " + " with " + &res.weather.iter()
+                                                        .map(|x| x.description.clone()).collect::<String>().to_owned(),
+
+                                                )
+                                            }
+
+                                            Err(e) => {
+                                                tool_message = ChatMessage::new(
+                                                    ollama_rs::generation::chat::MessageRole::Tool,
+                                                    "Error fetching: ".to_string().to_owned() + &e.to_string(),
+                                                )
+                                            }
+                                        }
 
                                         {
                                             let mut history = context_clone.lock().unwrap();
@@ -230,22 +288,29 @@ fn build_ui(app: &gtk::Application) {
                                             history.push(tool_message);
                                         }
                                     }
-                                    if let Ok(mut final_stream) = ollama
-                                        .send_chat_messages_with_history_stream(
-                                            Arc::clone(&context_clone),
-                                            ChatMessageRequest::new(model.clone(), vec![]),
-                                        )
-                                        .await
-                                    {
-                                        buffer.set_text("");
-                                        while let Some(chunk) = final_stream.next().await {
-                                            if let Ok(content) = chunk {
-                                                if content.final_data.is_none() {
-                                                    buffer.insert(
-                                                        &mut buffer.end_iter(),
-                                                        &content.message.content,
-                                                    );
-                                                }
+
+                                    buffer.set_text("Thinking...");
+                                }
+
+                                if let Ok(mut final_stream) = ollama
+                                    .send_chat_messages_with_history_stream(
+                                        Arc::clone(&context_clone),
+                                        ChatMessageRequest::new(model.clone(), vec![]),
+                                    )
+                                    .await
+                                {
+                                    let mut has_generated = false;
+                                    while let Some(chunk) = final_stream.next().await {
+                                        if let Ok(content) = chunk {
+                                            if !has_generated && content.message.content != "" {
+                                                buffer.set_text("");
+                                                has_generated = true;
+                                            }
+                                            if content.final_data.is_none() {
+                                                buffer.insert(
+                                                    &mut buffer.end_iter(),
+                                                    &content.message.content,
+                                                );
                                             }
                                         }
                                     }
